@@ -103,8 +103,11 @@ func TestAccessInvalidSuccessAndCancellation(t *testing.T) {
 					fmt.Fprint(w, body)
 				}))
 				defer server.Close()
-				c, _ := NewClientForTest(server.URL, "customer")
-				err := accessOperation(t.Context(), c, resource, "POST")
+				c, err := NewClientForTest(server.URL, "customer")
+				if err != nil {
+					t.Fatal(err)
+				}
+				err = accessOperation(t.Context(), c, resource, "POST")
 				if err == nil || strings.Contains(err.Error(), "SECRET") {
 					t.Fatalf("%v", err)
 				}
@@ -145,7 +148,10 @@ func TestAccessListPagination(t *testing.T) {
 				fmt.Fprintf(w, `{"apiVersion":"gcp.managed.openshift.io/v1","kind":%q,"metadata":{"continue":%q,"resourceVersion":"5"},"items":[{"metadata":{"name":%q}}]}`, kind, token, name)
 			}))
 			defer server.Close()
-			c, _ := NewClientForTest(server.URL, "customer")
+			c, err := NewClientForTest(server.URL, "customer")
+			if err != nil {
+				t.Fatal(err)
+			}
 			if resource == "roles" {
 				list, err := c.Roles().List(t.Context(), "customer")
 				if err != nil || len(list.Items) != 2 || list.Continue != "" || list.ResourceVersion != "5" {
@@ -178,8 +184,10 @@ func TestAccessListRejectsRepeatedPaginationToken(t *testing.T) {
 				fmt.Fprintf(w, `{"apiVersion":"gcp.managed.openshift.io/v1","kind":%q,"metadata":{"continue":"same"},"items":[]}`, kind)
 			}))
 			defer server.Close()
-			c, _ := NewClientForTest(server.URL, "customer")
-			var err error
+			c, err := NewClientForTest(server.URL, "customer")
+			if err != nil {
+				t.Fatal(err)
+			}
 			if resource == "roles" {
 				_, err = c.Roles().List(t.Context(), "customer")
 			} else {
@@ -202,8 +210,11 @@ func TestRoleUpdateAmbiguousResponses(t *testing.T) {
 				fmt.Fprint(w, body)
 			}))
 			defer server.Close()
-			c, _ := NewClientForTest(server.URL, "customer")
-			err := accessOperation(t.Context(), c, "roles", http.MethodPut)
+			c, err := NewClientForTest(server.URL, "customer")
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = accessOperation(t.Context(), c, "roles", http.MethodPut)
 			if !IsUncertainOutcome(err) || !strings.Contains(err.Error(), checkBeforeRetrying) || strings.Contains(err.Error(), "SECRET") || calls != 1 {
 				t.Fatalf("error=%v uncertainty=%v calls=%d", err, IsUncertainOutcome(err), calls)
 			}
@@ -223,9 +234,37 @@ func TestRoleUpdateDroppedConnection(t *testing.T) {
 		_ = conn.Close()
 	}))
 	defer server.Close()
-	c, _ := NewClientForTest(server.URL, "customer")
-	err := accessOperation(t.Context(), c, "roles", http.MethodPut)
+	c, err := NewClientForTest(server.URL, "customer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = accessOperation(t.Context(), c, "roles", http.MethodPut)
 	if !IsUncertainOutcome(err) || !strings.Contains(err.Error(), checkBeforeRetrying) || calls.Load() != 1 {
 		t.Fatalf("error=%v uncertainty=%v calls=%d", err, IsUncertainOutcome(err), calls.Load())
+	}
+}
+
+func TestAccessCreateRejectsNilResource(t *testing.T) {
+	for _, resource := range []string{"roles", "rolebindings"} {
+		t.Run(resource, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				calls++
+			}))
+			defer server.Close()
+
+			c, err := NewClientForTest(server.URL, "customer")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resource == "roles" {
+				_, err = c.Roles().Create(t.Context(), "customer", nil)
+			} else {
+				_, err = c.RoleBindings().Create(t.Context(), "customer", nil)
+			}
+			if err == nil || calls != 0 {
+				t.Fatalf("error=%v calls=%d", err, calls)
+			}
+		})
 	}
 }

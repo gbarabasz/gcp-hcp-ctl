@@ -25,6 +25,9 @@ type roleClient struct {
 }
 
 func (c *roleClient) Create(ctx context.Context, namespace string, role *gcpv1.Role) (*gcpv1.Role, error) {
+	if role == nil {
+		return nil, fmt.Errorf("role must not be nil")
+	}
 	result := &gcpv1.Role{}
 	response := c.restClient.Post().
 		MaxRetries(0).
@@ -127,6 +130,9 @@ type roleBindingClient struct {
 }
 
 func (c *roleBindingClient) Create(ctx context.Context, namespace string, roleBinding *gcpv1.RoleBinding) (*gcpv1.RoleBinding, error) {
+	if roleBinding == nil {
+		return nil, fmt.Errorf("role binding must not be nil")
+	}
 	result := &gcpv1.RoleBinding{}
 	response := c.restClient.Post().
 		MaxRetries(0).
