@@ -587,6 +587,76 @@ is on stdout for text and stderr for JSON/YAML, keeping structured stdout
 parseable. Structured deletion reports kind, name, namespace, and `accepted`,
 not a fabricated deleted object or complete principal revocation.
 
+#### RoleBinding conditions
+
+A condition is a **Cedar expression body**, not a complete `permit` policy.
+It restricts only the grant on that binding; other bindings can independently
+grant access. Omitting `--condition` on create leaves it absent. An explicit
+empty string, or a whitespace-only expression, is unconditional. The CLI
+passes the exact value through without parsing or trimming it. The API validates
+expressions: maximum 4096 characters; `Namespace::` entity references and
+additional Cedar policy statements are rejected. Invalid input is reported as
+`invalid request` without server diagnostics. Missing attribute paths fail
+closed; use `has` guards before testing optional fields.
+
+```bash
+# Omitted, explicitly unconditional, and conditioned grants.
+gcphcpctl --project customer-project rolebinding create viewer \
+  --subject alice@example.com --platform-role cluster-viewer
+gcphcpctl --project customer-project rolebinding create unrestricted \
+  --subject alice@example.com --role limited-operations --condition ''
+gcphcpctl --project customer-project rolebinding create regional-admin \
+  --subject admin@example.com --platform-role cluster-admin \
+  --condition '(context.resourcePlural == "clusters" && context.spec.platform.gcp has region && context.spec.platform.gcp.region == "us-central1") || (context.resourcePlural == "nodepools" && context.spec.platform.gcp has zone && context.spec.platform.gcp.zone like "us-central1-*")'
+
+# One or several fields may be changed in the same atomic API request.
+gcphcpctl --project customer-project rolebinding update viewer --subject bob@example.com
+gcphcpctl --project customer-project rolebinding update viewer --platform-role cluster-viewer
+gcphcpctl --project customer-project rolebinding update viewer --role limited-operations
+gcphcpctl --project customer-project rolebinding update viewer \
+  --subject bob@example.com --role limited-operations --condition ''
+```
+
+Update requires at least one flag and preserves omitted fields; either role flag
+switches the reference kind and name. This differs from `role update`, which
+replaces the complete permission set. Clearing with `--condition ''` sends an
+empty string without deleting the binding. The server may retain `"condition":
+""` in JSON, distinct from a binding that never had the field. A condition-only
+update still revalidates the role reference and can fail if the custom Role was
+deleted. Updates use one JSON merge PATCH; conflicts are reported without retry.
+Concurrency guarantees depend on the backend. A successful response is API
+acceptance, not immediate or global enforcement.
+
+`rolebinding list` displays an escaped, single-line condition preview, limited
+to 40 Unicode code points plus `...` when truncated. `get`, `create`, and
+`update` text output print the full copyable `--condition` argument on its own
+line. Copy that argument, not its label. Normal text uses shell single quotes;
+terminal controls use ANSI-C quoting supported by Bash and Zsh. NUL bytes cannot
+be represented in shell arguments. JSON and YAML retain the complete returned
+resource and condition rather than the preview.
+
+Available context includes `context.resourcePlural`, `context.resourceName`
+where available, `context.method` (the raw HTTP verb), and `context.spec`.
+`PATCH` and `PUT` are distinct method values. The regional example guards both
+the resource type and optional region/zone attributes. Do not assume arbitrary
+metadata/status fields or that a cluster-name condition grants access to child
+nodepools. Evaluation uses the request object for create, the stored object for
+get/delete, and both stored and resulting objects for PUT/PATCH.
+
+**Avoid access-management lockout.** A condition that enumerates resource types
+denies every type it does not name. If the bound role grants `role.*` or
+`rolebinding.*`, a condition must include `roles` and `rolebindings` to retain
+those grants. The regional example is appropriate for `cluster-admin`, which
+has cluster and nodepool permissions, but not `service-admin`, which grants
+access-management permissions instead: leave the latter unconditional or use a
+condition applicable to roles and rolebindings. Keep a separate bootstrap grant.
+For a custom Role combining cluster and access-management permissions, a
+condition can exempt access management while restricting clusters:
+
+```bash
+--condition '(context.resourcePlural == "roles" || context.resourcePlural == "rolebindings") || (context.resourcePlural == "clusters" && context.spec.platform.gcp has region && context.spec.platform.gcp.region == "us-central1")'
+```
+
 #### Manual access-management acceptance
 
 Use a disposable customer project with a bootstrapped service-admin, a separate

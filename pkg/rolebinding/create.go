@@ -10,8 +10,8 @@ import (
 )
 
 func newCreateCmd() *cobra.Command {
-	var subject, platformRole, role string
-	cmd := &cobra.Command{Use: "create <name>", Short: "Grant one user email one PlatformRole or custom Role", Args: access.Named, RunE: func(cmd *cobra.Command, args []string) error {
+	var subject, platformRole, role, condition string
+	cmd := &cobra.Command{Use: "create <name>", Short: "Grant one user email one PlatformRole or custom Role", Long: conditionHelp, Args: access.Named, RunE: func(cmd *cobra.Command, args []string) error {
 		email, err := NormalizeEmail(subject)
 		if err != nil {
 			return fmt.Errorf("invalid --subject: %w", err)
@@ -28,9 +28,13 @@ func newCreateCmd() *cobra.Command {
 			return fmt.Errorf("role reference must not be empty")
 		}
 		c := access.Client(cmd)
+		var conditionPtr *string
+		if cmd.Flags().Changed("condition") {
+			conditionPtr = &condition
+		}
 		binding, err := c.RoleBindings().Create(cmd.Context(), c.Namespace(), &gcpv1.RoleBinding{
 			TypeMeta: metav1.TypeMeta{APIVersion: gcpv1.GroupVersion.String(), Kind: "RoleBinding"}, ObjectMeta: metav1.ObjectMeta{Name: args[0], Namespace: c.Namespace()},
-			Spec: gcpv1.RoleBindingSpec{Subject: email, RoleRef: gcpv1.RoleRef{Kind: kind, Name: name, APIGroup: gcpv1.GroupVersion.Group}}})
+			Spec: gcpv1.RoleBindingSpec{Subject: email, RoleRef: gcpv1.RoleRef{Kind: kind, Name: name, APIGroup: gcpv1.GroupVersion.Group}, Condition: conditionPtr}})
 		if err != nil {
 			return err
 		}
@@ -39,6 +43,7 @@ func newCreateCmd() *cobra.Command {
 		}
 		return access.Note(cmd)
 	}}
+	cmd.Flags().StringVar(&condition, "condition", "", "Cedar condition expression body; empty makes the grant unconditional")
 	cmd.Flags().StringVar(&subject, "subject", "", "User email principal (required)")
 	cmd.Flags().StringVar(&platformRole, "platform-role", "", "PlatformRole name (exclusive with --role)")
 	cmd.Flags().StringVar(&role, "role", "", "Custom Role name in the selected project (exclusive with --platform-role)")
