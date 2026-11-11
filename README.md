@@ -597,7 +597,9 @@ passes the exact value through without parsing or trimming it. The API validates
 expressions: maximum 4096 characters; `Namespace::` entity references and
 additional Cedar policy statements are rejected. Invalid input is reported as
 `invalid request` without server diagnostics. Missing attribute paths fail
-closed; use `has` guards before testing optional fields.
+closed; use `has` guards before testing optional fields. For the language
+itself, use the official [Cedar operators and expression reference](https://docs.cedarpolicy.com/policies/syntax-operators.html)
+rather than treating the examples below as a complete language guide.
 
 ```bash
 # Omitted, explicitly unconditional, and conditioned grants.
@@ -608,6 +610,16 @@ gcphcpctl --project customer-project rolebinding create unrestricted \
 gcphcpctl --project customer-project rolebinding create regional-admin \
   --subject admin@example.com --platform-role cluster-admin \
   --condition '(context.resourcePlural == "clusters" && context.spec.platform.gcp has region && context.spec.platform.gcp.region == "us-central1") || (context.resourcePlural == "nodepools" && context.spec.platform.gcp has zone && context.spec.platform.gcp.zone like "us-central1-*")'
+
+# Restrict a grant to clusters whose names start with "bob".
+gcphcpctl --project customer-project rolebinding create bob-viewer \
+  --subject alice@example.com --platform-role cluster-viewer \
+  --condition 'context.resourcePlural == "clusters" && context.resourceName like "bob*"'
+
+# Replace or clear a condition without changing the subject or role reference.
+gcphcpctl --project customer-project rolebinding update bob-viewer \
+  --condition 'context.resourcePlural == "clusters" && context.resourceName like "test*"'
+gcphcpctl --project customer-project rolebinding update bob-viewer --condition ''
 
 # One or several fields may be changed in the same atomic API request.
 gcphcpctl --project customer-project rolebinding update viewer --subject bob@example.com
@@ -635,9 +647,18 @@ terminal controls use ANSI-C quoting supported by Bash and Zsh. NUL bytes cannot
 be represented in shell arguments. JSON and YAML retain the complete returned
 resource and condition rather than the preview.
 
-Available context includes `context.resourcePlural`, `context.resourceName`
-where available, `context.method` (the raw HTTP verb), and `context.spec`.
-`PATCH` and `PUT` are distinct method values. The regional example guards both
+The GCP HCP request context exposes:
+
+| Field | Meaning |
+|---|---|
+| `context.resourcePlural` | Target resource type, such as `clusters`, `nodepools`, `roles`, or `rolebindings`. |
+| `context.resourceName` | Target object's name, when available. |
+| `context.method` | Raw HTTP method; list and individual reads both use `GET`. |
+| `context.spec` | Target resource's public specification, not necessarily the RoleBinding that holds the condition. |
+
+Examples of resource-specific paths are `context.spec.platform.gcp.region` for
+clusters and `context.spec.platform.gcp.zone` for nodepools. `PATCH` and `PUT` are
+distinct method values. The regional example guards both
 the resource type and optional region/zone attributes. Do not assume arbitrary
 metadata/status fields or that a cluster-name condition grants access to child
 nodepools. Evaluation uses the request object for create, the stored object for
@@ -656,6 +677,63 @@ condition can exempt access management while restricting clusters:
 ```bash
 --condition '(context.resourcePlural == "roles" || context.resourcePlural == "rolebindings") || (context.resourcePlural == "clusters" && context.spec.platform.gcp has region && context.spec.platform.gcp.region == "us-central1")'
 ```
+
+#### Optional Cedar authoring tools
+
+The upstream [Cedar playground](https://cedarpolicy.com/) can help you experiment
+with policies and sample authorization requests. For offline syntax checking,
+versions of the optional [Cedar CLI](https://github.com/cedar-policy/cedar/tree/main/cedar-policy-cli)
+that support `check-parse --expression` can parse an expression directly:
+
+```bash
+cedar check-parse --expression 'context.resourcePlural == "clusters" && context.resourceName like "bob*"'
+```
+
+Parsing checks syntax, not whether fields exist in GCP HCP or whether the grant
+has the intended effect. Schema-based validation requires an appropriate schema;
+evaluation needs representative request data. Upstream tool/language versions
+can differ from the deployed server, and generic tools do not enforce HCP-specific
+constraints such as the prohibition on `Namespace::` references. Do not paste
+sensitive operational data into public tools. These tools are optional and are
+not gcphcpctl dependencies; the Platform API remains authoritative for acceptance.
+
+#### Manual RoleBinding condition acceptance (CLI)
+
+Use a disposable customer project and uniquely named test-owned resources, with
+an existing administrator authorized to manage bindings. A synthetic subject is
+sufficient for these API-persistence checks; it is not enforcement evidence.
+Confirm the selected write endpoint accepts mutations (use a leader region when
+leader/follower routing is enabled). Never alter bootstrap or unrelated grants.
+
+1. Create bindings referencing both a PlatformRole and a custom Role. Cover
+   omitted, explicitly empty, and non-empty conditions; GET each binding to check
+   whether the API retains the condition key and its exact value, including
+   whitespace and newlines. Inspect text, JSON, and YAML output.
+2. PATCH a binding just created and independently read back. Replace its condition,
+   then GET it again to verify the public gateway exposes the PATCH route, the
+   expression persists unchanged, and UID, unrelated metadata/spec, subject, and
+   role reference are preserved. A PATCH 404 on that known-existing binding is
+   not evidence of a normal missing-resource case; investigate routing.
+3. Clear the condition using `--condition ''`, then GET it. Verify identity and
+   omitted fields remain intact; record whether the API retains an empty string
+   or removes the condition key. Do not infer enforcement from this read-back.
+4. Update subject and role reference independently, including Role/PlatformRole
+   switches, then perform a combined update. Read back each result to verify
+   supplied values change together and omitted fields and identity are preserved.
+5. Submit an invalid condition on create and in a combined update. Verify safe
+   errors, no created binding for a rejected create, no success notice, and an
+   unchanged existing binding after a rejected update. Also check missing-update
+   not-found, create conflict, and local rejection when no update flag is supplied.
+6. Verify list previews are escaped/truncated while GET and JSON/YAML preserve the
+   complete condition. Round-trip a full-detail argument using controlled test
+   values; do not execute untrusted returned text as shell code.
+7. Delete only resources whose successful creation and identity were confirmed.
+   Verify test resources are absent and pre-existing grants are unchanged.
+
+Record API acceptance and persisted values separately from authorization behavior.
+Cedar enforcement is owned by [GCP-1031](https://redhat.atlassian.net/browse/GCP-1031)
+and server-side validation/e2e coverage, not this CLI condition-management checklist.
+The broader access-management regression checks below are separate from it.
 
 #### Manual access-management acceptance
 

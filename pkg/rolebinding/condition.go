@@ -5,6 +5,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/spf13/cobra"
 )
 
 // conditionPreview escapes non-printing code points before counting the display
@@ -93,15 +95,35 @@ func conditionArgument(condition *string) string {
 	return b.String()
 }
 
-const conditionHelp = `The condition is a Cedar expression body, not a complete policy. The API
-validates it (maximum 4096 characters; Namespace:: references and trailing
-policy statements are rejected). Missing attributes fail closed; use "has"
-guards. An omitted or empty condition is unrestricted; whitespace-only is
-also unrestricted. Expressions are sent unchanged. A condition limits only
-this binding, not independent grants. Changes may take time to propagate.
+// setConditionHelp appends shared guidance after Cobra's normal usage,
+// examples, and flags, rather than putting it in the command description.
+func setConditionHelp(cmd *cobra.Command) {
+	cmd.SetHelpTemplate(cmd.HelpTemplate() + "\n" + conditionHelp + "\n")
+}
 
-Text details print a copyable --condition argument; control characters use
-Bash/Zsh ANSI-C quoting. JSON/YAML retain the complete returned value. List
-previews are escaped and truncated. Explicit empty may remain visible as
-"condition": "" in JSON rather than an absent field. See the access management
-section of README for context fields, regional examples, and lockout warnings.`
+const conditionHelp = `Conditions:
+  --condition accepts a Cedar boolean expression, not a complete policy.
+  The expression must evaluate to true for this binding to grant access.
+  Quote expressions to protect them from shell interpretation, and use
+  "has" before accessing optional fields.
+
+  Omitting --condition creates an unconditional binding on create and
+  preserves the existing condition on update. An explicitly empty value
+  (--condition '') makes the binding unconditional. Expressions are sent
+  unchanged; the Platform API validates them.
+
+  GCP HCP exposes these fields:
+    context.resourcePlural   Resource type: clusters, nodepools, roles, etc.
+    context.resourceName     Target object's name, when available
+    context.method           HTTP method: GET, POST, PUT, PATCH, DELETE
+    context.spec             Target resource's public specification
+
+  Cedar syntax:
+    https://docs.cedarpolicy.com/policies/syntax-operators.html
+
+Safety:
+  Conditions restrict only this binding; independent grants may still
+  allow access. Changes may take time to propagate.
+
+  Keep a separate administrator grant. A condition excluding roles or
+  rolebindings can prevent you from managing access or clearing it.`

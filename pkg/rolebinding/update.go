@@ -14,8 +14,12 @@ func newUpdateCmd() *cobra.Command {
 	var subject, role, platformRole, condition string
 	cmd := &cobra.Command{
 		Use: "update <name>", Short: "Update supplied fields of a RoleBinding",
-		Long: `Update supplied fields of a RoleBinding with a single merge patch. Omitted fields are preserved; at least one flag is required. Unlike role update, this does not replace the whole spec. Use --condition '' to make the grant unconditional. The API may retain an explicit empty condition in JSON. The server revalidates the role reference even for a condition-only update.` + "\n\n" + conditionHelp,
-		Args: access.Named,
+		Long: `Update the subject, role reference, or condition of an existing RoleBinding.
+Only supplied fields change; omitted fields and binding identity are
+preserved. At least one update flag is required. Unlike role update's
+permission-set replacement, this is a partial update.`,
+		Example: updateExamples,
+		Args:    access.Named,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var patch platformapi.RoleBindingPatch
 			if cmd.Flags().Changed("subject") {
@@ -59,7 +63,26 @@ func newUpdateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&subject, "subject", "", "New user email principal")
 	cmd.Flags().StringVar(&role, "role", "", "New custom Role name (exclusive with --platform-role)")
 	cmd.Flags().StringVar(&platformRole, "platform-role", "", "New PlatformRole name (exclusive with --role)")
-	cmd.Flags().StringVar(&condition, "condition", "", "Cedar condition expression body; empty makes the grant unconditional")
+	cmd.Flags().StringVar(&condition, "condition", "", "Cedar expression (see Conditions below)")
 	cmd.MarkFlagsMutuallyExclusive("role", "platform-role")
+	setConditionHelp(cmd)
 	return cmd
 }
+
+const updateExamples = `  # Change the subject, preserving the role reference and condition.
+  gcphcpctl rolebinding update viewer --subject bob@example.com
+
+  # Switch to a custom Role or a PlatformRole.
+  gcphcpctl rolebinding update viewer --role limited-operations
+  gcphcpctl rolebinding update viewer --platform-role cluster-viewer
+
+  # Replace the condition.
+  gcphcpctl rolebinding update viewer \
+    --condition 'context.resourcePlural == "clusters" && context.resourceName like "bob*"'
+
+  # Clear the condition.
+  gcphcpctl rolebinding update viewer --condition ''
+
+  # Change several fields together.
+  gcphcpctl rolebinding update viewer \
+    --subject bob@example.com --role limited-operations --condition ''`
