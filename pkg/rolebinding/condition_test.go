@@ -31,6 +31,7 @@ func TestConditionPreview(t *testing.T) {
 }
 
 func TestConditionShellRoundTrip(t *testing.T) {
+	ranShells := 0
 	inputs := []string{"", "normal", " 'single' \"double\" $(no) `x` ", "line 1\nline 2\n", "\t\x1b[31m\x7f's\\x", "unicode café\u202e hidden"}
 	for _, shell := range []string{"bash", "zsh"} {
 		path, err := exec.LookPath(shell)
@@ -38,6 +39,8 @@ func TestConditionShellRoundTrip(t *testing.T) {
 			t.Logf("%s unavailable", shell)
 			continue
 		}
+		ranShells++
+		t.Logf("running shell round trips with %s", path)
 		for _, input := range inputs {
 			// Only controlled test fixtures are ever evaluated as shell code.
 			literal := conditionArgument(&input)
@@ -47,6 +50,9 @@ func TestConditionShellRoundTrip(t *testing.T) {
 				t.Errorf("%s %q: %q, %v; literal %q", shell, input, got, err, literal)
 			}
 		}
+	}
+	if ranShells == 0 {
+		t.Fatal("shell round-trip coverage requires at least one supported shell (bash or zsh) on PATH")
 	}
 }
 

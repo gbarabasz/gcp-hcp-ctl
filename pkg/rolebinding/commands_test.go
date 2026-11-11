@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -24,13 +25,19 @@ func executeBinding(t *testing.T, handler http.HandlerFunc, args ...string) (str
 	t.Helper()
 	server := httptest.NewServer(handler)
 	defer server.Close()
-	client, err := platformapi.NewClientForTest(server.URL, "customer")
+	return executeBindingAt(t, server.URL, args...)
+}
+
+// executeBindingAt lets sequential commands share one stateful HTTP fixture.
+func executeBindingAt(t *testing.T, serverURL string, args ...string) (string, string, error) {
+	t.Helper()
+	client, err := platformapi.NewClientForTest(serverURL, "customer")
 	if err != nil {
 		t.Fatal(err)
 	}
 	root := &cobra.Command{Use: "test", SilenceUsage: true, SilenceErrors: true}
 	root.PersistentFlags().String("project", "customer", "")
-	root.PersistentFlags().String("api-endpoint", server.URL, "")
+	root.PersistentFlags().String("api-endpoint", serverURL, "")
 	root.PersistentFlags().StringP("output", "o", "text", "")
 	root.AddCommand(NewRoleBindingCmd())
 	var out, stderr bytes.Buffer
@@ -150,17 +157,35 @@ func TestUpdateValidationNoRequests(t *testing.T) {
 	}
 }
 func TestUpdateErrorsAreSafe(t *testing.T) {
-	for _, status := range []int{400, 401, 403, 404, 409, 422, 500} {
-		t.Run(fmt.Sprint(status), func(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		want   string
+	}{
+		{http.StatusBadRequest, "invalid request"},
+		{http.StatusUnauthorized, "not authenticated"},
+		{http.StatusForbidden, "permission denied"},
+		{http.StatusNotFound, "not found"},
+		{http.StatusConflict, "conflict"},
+		{http.StatusUnprocessableEntity, "invalid request"},
+		{http.StatusInternalServerError, "server error"},
+	} {
+		t.Run(fmt.Sprint(tc.status), func(t *testing.T) {
 			calls := 0
 			out, stderr, err := executeBinding(t, func(w http.ResponseWriter, r *http.Request) {
 				calls++
 				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(status)
+				w.WriteHeader(tc.status)
 				fmt.Fprint(w, `{"message":"SECRET SERVER PROSE"}`)
 			}, "update", "grant", "--condition", "invalid")
-			if err == nil || calls != 1 || strings.Contains(err.Error(), "SECRET") || strings.Contains(out+stderr, propagation) {
-				t.Fatalf("%v %d %s %s", err, calls, out, stderr)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+			var httpErr *platformapi.HTTPError
+			if !errors.As(err, &httpErr) || httpErr.StatusCode() != tc.status || httpErr.Method() != http.MethodPatch || httpErr.Resource() != "rolebindings" || httpErr.Name() != "grant" {
+				t.Fatalf("HTTP error metadata = %#v", httpErr)
+			}
+			if calls != 1 || out != "" || stderr != "" {
+				t.Fatalf("calls=%d, stdout=%q, stderr=%q; want one request and no success output", calls, out, stderr)
 			}
 		})
 	}
@@ -211,27 +236,53 @@ func TestGetAndListFormats(t *testing.T) {
 	}
 }
 
+// The fixture rejects supplied expressions; this tests CLI pass-through and safe
+// error handling, not Cedar validity or the live server's length constraints.
 func TestConditionsForwardedToServerAndRejectedSafely(t *testing.T) {
-	for _, expr := range []string{strings.Repeat("é", 4095), strings.Repeat("é", 4096), strings.Repeat("é", 4097), `principal == Namespace::"x"`, `true } permit(principal, action, resource) when { true`} {
-		t.Run(fmt.Sprint(len([]rune(expr))), func(t *testing.T) {
-			calls := 0
-			out, stderr, err := executeBinding(t, func(w http.ResponseWriter, r *http.Request) {
-				calls++
-				var body map[string]any
-				if e := json.NewDecoder(r.Body).Decode(&body); e != nil {
-					t.Fatal(e)
-				}
-				if body["spec"].(map[string]any)["condition"] != expr {
-					t.Error("condition not sent unchanged")
-				}
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusBadRequest)
-				fmt.Fprint(w, `{"message":"SECRET invalid policy"}`)
-			}, "update", "grant", "--condition", expr)
-			if err == nil || !strings.Contains(err.Error(), "invalid request") || strings.Contains(err.Error(), "SECRET") || calls != 1 || strings.Contains(out+stderr, propagation) {
-				t.Fatalf("%v calls=%d out=%q stderr=%q", err, calls, out, stderr)
+	for _, command := range []string{"create", "update"} {
+		for _, status := range []int{http.StatusBadRequest, http.StatusUnprocessableEntity} {
+			for _, tc := range []struct{ name, expression string }{
+				{"invalid-syntax", "this is not Cedar"},
+				{"4095-runes", strings.Repeat("é", 4095)},
+				{"4096-runes", strings.Repeat("é", 4096)},
+				{"4097-runes", strings.Repeat("é", 4097)},
+				{"namespace-reference", `principal == Namespace::"x"`},
+				{"trailing-statement", `true } permit(principal, action, resource) when { true`},
+			} {
+				t.Run(fmt.Sprintf("%s/%d/%s", command, status, tc.name), func(t *testing.T) {
+					args := []string{command, "grant", "--condition", tc.expression, "-o", "json"}
+					method, path := http.MethodPatch, testBase+"/grant"
+					if command == "create" {
+						args = append(args, "--subject", "a@b", "--role", "viewer")
+						method, path = http.MethodPost, testBase
+					}
+					calls := 0
+					out, stderr, err := executeBinding(t, func(w http.ResponseWriter, r *http.Request) {
+						calls++
+						if r.Method != method || r.URL.Path != path {
+							t.Errorf("request = %s %s, want %s %s", r.Method, r.URL.Path, method, path)
+						}
+						var body struct {
+							Spec map[string]any `json:"spec"`
+						}
+						if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+							t.Error(err)
+							http.Error(w, "invalid fixture request", http.StatusBadRequest)
+							return
+						}
+						if body.Spec["condition"] != tc.expression {
+							t.Error("condition not sent unchanged")
+						}
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(status)
+						fmt.Fprint(w, `{"message":"SECRET invalid policy"}`)
+					}, args...)
+					if err == nil || err.Error() != "invalid request" || calls != 1 || out != "" || stderr != "" {
+						t.Fatalf("error=%v calls=%d stdout=%q stderr=%q", err, calls, out, stderr)
+					}
+				})
 			}
-		})
+		}
 	}
 }
 
