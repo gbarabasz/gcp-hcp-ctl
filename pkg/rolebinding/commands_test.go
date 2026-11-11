@@ -275,7 +275,9 @@ func TestConditionsForwardedToServerAndRejectedSafely(t *testing.T) {
 						}
 						w.Header().Set("Content-Type", "application/json")
 						w.WriteHeader(status)
-						fmt.Fprint(w, `{"message":"SECRET invalid policy"}`)
+						if _, err := fmt.Fprint(w, `{"message":"SECRET invalid policy"}`); err != nil {
+							t.Errorf("writing rejection fixture response: %v", err)
+						}
 					}, args...)
 					if err == nil || err.Error() != "invalid request" || calls != 1 || out != "" || stderr != "" {
 						t.Fatalf("error=%v calls=%d stdout=%q stderr=%q", err, calls, out, stderr)
